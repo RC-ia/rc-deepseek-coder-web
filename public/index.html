@@ -7,24 +7,64 @@
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
-  <header>
-    <h1>RC DeepSeek Coder</h1>
-    <span id="status" class="status">proxy: …</span>
-  </header>
+  <aside class="sidebar">
+    <div class="brand">⚡ RC Coder</div>
 
-  <main>
+    <div class="section">
+      <div class="section-title">Workspace</div>
+      <select id="wsSelect" class="select"></select>
+      <div class="ws-path" id="wsPath"></div>
+      <button id="newWsBtn" class="btn-ghost">+ Novo workspace</button>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Modelo</div>
+      <select id="modelSelect" class="select">
+        <option value="deepseek-reasoner">deepseek-reasoner</option>
+        <option value="deepseek-v4-pro">deepseek-v4-pro</option>
+        <option value="deepseek-chat">deepseek-chat</option>
+        <option value="deepseek-v3">deepseek-v3</option>
+      </select>
+    </div>
+
+    <div class="section grow">
+      <div class="section-title">Arquivos</div>
+      <div id="tree" class="tree"></div>
+    </div>
+
+    <div class="section bottom">
+      <button id="themeBtn" class="btn-ghost">🌙 Tema</button>
+      <div class="status" id="status">proxy: …</div>
+    </div>
+  </aside>
+
+  <main class="main">
     <section id="chat" class="chat"></section>
-
     <section id="tools" class="tools">
-      <h2>Tool calls ao vivo</h2>
+      <div class="tools-head">Tool calls ao vivo</div>
       <div id="toollog" class="toollog"></div>
     </section>
   </main>
 
-  <footer>
+  <footer class="footer">
     <textarea id="input" placeholder="Descreva o que quer codar… (Enter envia, Shift+Enter quebra linha)"></textarea>
     <button id="send">Enviar</button>
   </footer>
+
+  <!-- modal novo workspace -->
+  <div id="modal" class="modal hidden">
+    <div class="modal-card">
+      <h3>Novo workspace</h3>
+      <label>Nome</label>
+      <input id="wsName" placeholder="meu-projeto" />
+      <label>Caminho (qualquer pasta)</label>
+      <input id="wsPathInput" placeholder="/home/aldair/projetos/x  ou  C:\\mango - Copia" />
+      <div class="modal-actions">
+        <button id="wsCancel" class="btn-ghost">Cancelar</button>
+        <button id="wsCreate" class="btn-primary">Criar</button>
+      </div>
+    </div>
+  </div>
 
   <script src="/app.js"></script>
 </body>
