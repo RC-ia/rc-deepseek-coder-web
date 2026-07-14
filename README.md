@@ -31,6 +31,7 @@ O backend Node envia as ferramentas no formato `tools` da OpenAI e o proxy devol
 ## Uso
 
 ```bash
+git clone https://github.com/RC-ia/rc-deepseek-coder-web.git
 cd rc-deepseek-coder-web
 npm start
 # abra http://localhost:8080
