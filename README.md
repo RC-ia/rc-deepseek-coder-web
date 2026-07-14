@@ -1,16 +1,16 @@
 # rc-deepseek-coder-web
 
-App web (npm + HTML/JS/CSS) que **gera código usando o seu proxy DeepSeek Web** via protocolo OpenAI nativo de tool-calling, com **log de tool calls ao vivo**, **workspaces dinâmicos** (qualquer pasta, em qualquer local) e **tema claro/escuro**.
+App web (npm + HTML/JS/CSS, **zero dependências**) que gera código usando o seu proxy DeepSeek Web via protocolo OpenAI nativo de tool-calling. Interface **estilo OpenCode**: sessions persistentes (salvas em arquivo), chat compacto, tool calls embutidas nas mensagens e painel de arquivos.
 
 ## Recursos
 
-- 💬 **Chat** com o modelo (DeepSeek Web via proxy) — sem XML frágil, usa `tool_calls` estruturado.
-- 🔧 **Tool calls ao vivo** (painel lateral): cada `read`/`write`/`edit`/`list`/`glob` com args + resultado.
-- 📁 **Workspaces**: crie um workspace apontando para **qualquer pasta** (ex.: `/home/aldair/projeto`, `C:\mango - Copia`). Troque entre eles a qualquer momento. Persistido em `~/.rc-coder-workspaces.json`.
-- 🌳 **Árvore de arquivos** do workspace atualizada em tempo real conforme o agente cria/edita arquivos.
-- 🎛️ **Seletor de modelo** (deepseek-reasoner / v4-pro / chat / v3) por workspace.
-- 🌙 **Tema claro/escuro** (preferência salva no navegador).
-- 🛡️ **Sandbox**: ferramentas só operam dentro do workspace ativo.
+- 💬 **Chat permanente** — cada conversa é uma **session** salva em `~/.rc-coder/sessions/<id>.json`. Sobrevive a restart do servidor; você pode fechar o navegador e continuar depois.
+- 📋 **Lista de sessions estilo OpenCode** — sidebar com ícone, título (derivado da 1ª mensagem), preview da última resposta e tempo relativo. Clique para abrir, 🗑 para excluir.
+- 🔧 **Tool calls embutidas** — cada `read`/`write`/`edit`/`list`/`glob` aparece dentro da mensagem do assistant, com args + resultado.
+- 🌳 **Árvore de arquivos** do workspace (botão 🌳).
+- 🎛️ **Seletor de modelo** por session (deepseek-reasoner / v4-pro / chat / v3).
+- 🌙 **Tema claro/escuro**.
+- 🛡️ **Sandbox**: ferramentas só operam dentro do workspace da session.
 
 ## Por que não trava as tools
 
@@ -24,46 +24,41 @@ O backend Node envia as ferramentas no formato `tools` da OpenAI e o proxy devol
 
 - Node.js 18+ (apenas biblioteca padrão — **zero dependências de npm**)
 - O proxy DeepSeek Web rodando e acessível
-- Quem roda o app (WSL/Linux) deve alcançar o proxy
 
 ## Configuração (env / .env)
 
-As configs podem vir de variáveis de ambiente **ou** de um arquivo **`.env`** na raiz do projeto (carregado automaticamente, sem dependências). Copie `.env.example` para `.env` e ajuste.
+Copie `.env.example` → `.env`. Carregado automaticamente.
 
 | Var | Default | Descrição |
 |---|---|---|
 | `DS_API_BASE` | `http://172.22.0.1:9655` | Base URL do proxy (**obrigatória**) |
 | `DS_API_KEY` | `sk-local` | Proxy não valida |
-| `DS_MODEL` | `deepseek-reasoner` | Modelo padrão (cria workspace "default") |
-| `DS_WORKDIR` | `./workspace` | Pasta do workspace "default" |
+| `DS_MODEL` | `deepseek-reasoner` | Modelo padrão |
 | `PORT` | `8080` | Porta do servidor web |
 
-> A URL carregada aparece no canto inferior da sidebar (`proxy <url>`).
+Sessions ficam em `~/.rc-coder/sessions/`.
 
 ## Uso
 
 ```bash
-git clone https://github.com/RC-ia/rc-deepseek-coder-web.git
 cd rc-deepseek-coder-web
 npm start          # node server.js
 # abra http://localhost:8080
 ```
 
-1. Clique em **+ Novo workspace**, dê um nome e aponte para qualquer pasta.
-2. Selecione o modelo no seletor.
-3. Digite o pedido (ex.: "crie hello.py que imprima oi mundo") e veja as tool calls + árvore ao vivo.
+1. Clique em **+ Nova sessão**.
+2. Digite o pedido (ex.: "crie hello.py que imprima oi mundo").
+3. A session é salva automaticamente — reaparece na lista ao reabrir.
 
 ## Tratamento de erros
 
-- **413 (contexto cheio):** o agente detecta e comprime o histórico antes de retomar.
+- **413 (contexto cheio):** o agente detecta e comprime o histórico.
 - **Throttle 25s do proxy:** o proxy bloqueia a requisição; o app apenas aguarda (streaming).
-- **1 retry de rede** em falhas transitórias do proxy.
+- **1 retry de rede** em falhas transitórias.
 
 ## Endpoints
 
 - `GET /` — UI
-- `POST /api/chat` — roda o agente, stream SSE (`data: {json}\n\n`)
-- `GET /api/workspaces` · `POST /api/workspaces` (criar/switch)
-- `POST /api/model` — troca modelo do workspace ativo
-- `GET /api/tree` — árvore de arquivos do workspace
-- `GET /api/health` — status
+- `GET /api/sessions` · `POST /api/sessions` (criar) · `DELETE /api/sessions/:id`
+- `GET /api/sessions/:id` · `POST /api/sessions/:id/messages` (roda agente, SSE)
+- `GET /api/health`

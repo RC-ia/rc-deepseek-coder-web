@@ -1,48 +1,48 @@
 'use strict';
 const $ = (s) => document.querySelector(s);
 const chatEl = $('#chat');
-const toolLogEl = $('#toollog');
+const sessionsEl = $('#sessions');
 const inputEl = $('#input');
 const sendBtn = $('#send');
 const statusEl = $('#status');
-const wsSelect = $('#wsSelect');
-const wsPathEl = $('#wsPath');
+const sessBadge = $('#sessBadge');
 const modelSelect = $('#modelSelect');
 const treeEl = $('#tree');
+const toolsPanel = $('#toolsPanel');
 
-function esc(s) {
-  return String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+let currentId = null;
+let models = [];
+
+function esc(s) { return String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c])); }
+function relTime(ts) {
+  if (!ts) return '';
+  const s = Math.floor((Date.now() - ts) / 1000);
+  if (s < 60) return s + 's';
+  if (s < 3600) return Math.floor(s / 60) + 'm';
+  if (s < 86400) return Math.floor(s / 3600) + 'h';
+  return Math.floor(s / 86400) + 'd';
 }
 function addMsg(role, text) {
   const d = document.createElement('div');
   d.className = 'msg ' + role;
-  d.textContent = text;
+  d.innerHTML = `<div class="role">${role}</div>${esc(text)}`;
   chatEl.appendChild(d);
   chatEl.scrollTop = chatEl.scrollHeight;
   return d;
 }
-function addTool(name, args, result) {
-  const d = document.createElement('div');
-  d.className = 'tool';
-  const argStr = Object.entries(args || {}).map(([k, v]) => `${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`).join('  ');
-  const isErr = String(result || '').startsWith('ERROR');
-  d.innerHTML = `<div class="name">🔧 ${name}</div><div class="args">${esc(argStr)}</div><div class="result ${isErr ? 'err' : ''}">${esc(result || '')}</div>`;
-  toolLogEl.appendChild(d);
-  toolLogEl.scrollTop = toolLogEl.scrollHeight;
+function renderTools(container, tools) {
+  for (const t of tools || []) {
+    const d = document.createElement('div');
+    d.className = 'tool';
+    const argStr = Object.entries(t.args || {}).map(([k, v]) => `${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`).join('  ');
+    const isErr = String(t.result || '').startsWith('ERROR');
+    d.innerHTML = `<div class="name">🔧 ${esc(t.name)}</div><div class="args">${esc(argStr)}</div><div class="result ${isErr ? 'err' : ''}">${esc(t.result || '')}</div>`;
+    container.appendChild(d);
+  }
 }
-function updateLastToolResult(result) {
-  const tools = toolLogEl.querySelectorAll('.tool');
-  if (!tools.length) return;
-  const last = tools[tools.length - 1];
-  const r = last.querySelector('.result');
-  r.textContent = result || '';
-  if (String(result || '').startsWith('ERROR')) r.classList.add('err');
-}
-
-// ---- tree render ----
 function renderTree(tree) {
   if (!tree || !tree.length) { treeEl.innerHTML = '<div class="node">— vazio —</div>'; return; }
-  const walk = (nodes, depth = 0) => {
+  const walk = (nodes) => {
     const frag = document.createDocumentFragment();
     for (const n of nodes) {
       const node = document.createElement('div');
@@ -54,49 +54,82 @@ function renderTree(tree) {
       if (n.type === 'dir' && n.children && n.children.length) {
         const kids = document.createElement('div');
         kids.className = 'children';
-        kids.appendChild(walk(n.children, depth + 1));
+        kids.appendChild(walk(n.children));
         node.appendChild(kids);
       }
       frag.appendChild(node);
     }
     return frag;
   };
-  treeEl.innerHTML = '';
-  treeEl.appendChild(walk(tree));
+  treeEl.innerHTML = ''; treeEl.appendChild(walk(tree));
 }
 
-// ---- state ----
-async function refreshWs() {
-  const d = await (await fetch('/api/workspaces')).json();
-  wsSelect.innerHTML = '';
-  d.workspaces.forEach((w, i) => {
-    const o = document.createElement('option');
-    o.value = i; o.textContent = w.name;
-    if (i === d.active) o.selected = true;
-    wsSelect.appendChild(o);
+// ---- sessions ----
+async function loadSessions() {
+  const d = await (await fetch('/api/sessions')).json();
+  models = d.models || [];
+  modelSelect.innerHTML = '';
+  models.forEach((m) => { const o = document.createElement('option'); o.value = m; o.textContent = m; modelSelect.appendChild(o); });
+  statusEl.textContent = `proxy ${d.api_base}`;
+  sessionsEl.innerHTML = '';
+  (d.sessions || []).forEach((s) => {
+    const el = document.createElement('div');
+    el.className = 'session' + (s.id === currentId ? ' active' : '');
+    el.innerHTML = `<div class="s-title">${esc(s.title)}</div><div class="s-preview">${esc(s.preview)}</div><div class="s-meta"><span>${relTime(s.updatedAt)}</span><span class="s-del" data-del="${s.id}">🗑</span></div>`;
+    el.addEventListener('click', (e) => { if (e.target.dataset.del) return; openSession(s.id); });
+    el.querySelector('.s-del').addEventListener('click', (e) => { e.stopPropagation(); delSession(s.id); });
+    sessionsEl.appendChild(el);
   });
-  wsPathEl.textContent = d.workspaces[d.active].path;
-  modelSelect.value = d.workspaces[d.active].model;
-  return d;
+}
+async function openSession(id) {
+  currentId = id;
+  const d = await (await fetch('/api/sessions/' + id)).json();
+  modelSelect.value = d.session.model;
+  sessBadge.textContent = d.session.title;
+  chatEl.innerHTML = '';
+  for (const m of d.session.messages) {
+    if (m.role === 'user') addMsg('user', m.content);
+    else if (m.role === 'assistant') {
+      if (m.content) addMsg('assistant', m.content);
+      if (m.tools && m.tools.length) {
+        const wrap = document.createElement('div');
+        wrap.className = 'tools';
+        renderTools(wrap, m.tools);
+        chatEl.appendChild(wrap);
+        chatEl.scrollTop = chatEl.scrollHeight;
+      }
+    }
+  }
+  if (d.tree) renderTree(d.tree);
+  else refreshTree();
+  await loadSessions();
+}
+async function delSession(id) {
+  if (!confirm('Excluir esta sessão?')) return;
+  await fetch('/api/sessions/' + id, { method: 'DELETE' });
+  if (currentId === id) { currentId = null; sessBadge.textContent = 'nenhuma sessão'; chatEl.innerHTML = ''; }
+  await loadSessions();
 }
 async function refreshTree() {
-  const d = await (await fetch('/api/tree')).json();
-  renderTree(d.tree);
+  if (!currentId) return;
+  const d = await (await fetch('/api/sessions/' + currentId)).json();
+  if (d.tree) renderTree(d.tree);
 }
 
-// ---- chat stream ----
+// ---- chat ----
 async function send() {
   const text = inputEl.value.trim();
-  if (!text) return;
+  if (!text || !currentId) { if (!currentId) alert('Crie ou selecione uma sessão primeiro.'); return; }
   inputEl.value = '';
   addMsg('user', text);
   sendBtn.disabled = true;
-  await streamChat(text);
+  const model = modelSelect.value;
+  await streamChat(text, model);
   sendBtn.disabled = false;
-  refreshTree();
+  loadSessions();
 }
-function streamChat(text) {
-  return fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: text }) })
+function streamChat(text, model) {
+  return fetch('/api/sessions/' + currentId + '/messages', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: text, model }) })
     .then((res) => {
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
@@ -121,50 +154,46 @@ function streamChat(text) {
 }
 function handleEvent(ev) {
   switch (ev.type) {
-    case 'tool': addTool(ev.name, ev.args, '…'); break;
-    case 'tool_result': updateLastToolResult(ev.result); break;
     case 'assistant': addMsg('assistant', ev.text); break;
     case 'info': addMsg('info', ev.text); break;
     case 'error': addMsg('error', ev.text); break;
+    case 'tool':
+      // agrupa tools na ultima msg assistant (ou cria container)
+      let wrap = chatEl.querySelector('.tools:last-child');
+      if (!wrap || wrap.dataset.closed) { wrap = document.createElement('div'); wrap.className = 'tools'; chatEl.appendChild(wrap); }
+      renderTools(wrap, [{ name: ev.name, args: ev.args, result: '…' }]);
+      chatEl.scrollTop = chatEl.scrollHeight;
+      break;
+    case 'tool_result':
+      // atualiza o ultimo tool pendente
+      {
+        const wraps = chatEl.querySelectorAll('.tools');
+        const last = wraps[wraps.length - 1];
+        if (last) { const r = last.querySelectorAll('.tool .result'); const lr = r[r.length - 1]; if (lr) { lr.textContent = ev.result || ''; if (String(ev.result || '').startsWith('ERROR')) lr.classList.add('err'); } }
+      }
+      break;
     case 'tree': renderTree(ev.tree); break;
-    case 'done': sendBtn.disabled = false; refreshTree(); break;
+    case 'session': sessBadge.textContent = ev.session.title; break;
+    case 'done': refreshTree(); break;
   }
 }
 
 // ---- events ----
 sendBtn.addEventListener('click', send);
 inputEl.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
-wsSelect.addEventListener('change', async () => {
-  await fetch('/api/workspaces', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ switchTo: Number(wsSelect.value) }) });
-  await refreshWs(); await refreshTree();
-  chatEl.innerHTML = ''; addMsg('info', 'Workspace trocado para ' + wsSelect.options[wsSelect.selectedIndex].text);
-});
-modelSelect.addEventListener('change', async () => {
-  await fetch('/api/model', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: modelSelect.value }) });
-  addMsg('info', 'Modelo -> ' + modelSelect.value);
+$('#newBtn').addEventListener('click', async () => {
+  const d = await (await fetch('/api/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) })).json();
+  await loadSessions();
+  openSession(d.session.id);
 });
 $('#themeBtn').addEventListener('click', () => {
   document.body.classList.toggle('light');
-  const light = document.body.classList.contains('light');
-  $('#themeBtn').textContent = light ? '☀️ Tema' : '🌙 Tema';
-  try { localStorage.setItem('rc-theme', light ? 'light' : 'dark'); } catch {}
+  $('#themeBtn').textContent = document.body.classList.contains('light') ? '☀️' : '🌙';
+  try { localStorage.setItem('rc-theme', document.body.classList.contains('light') ? 'light' : 'dark'); } catch {}
 });
-
-// ---- modal ----
-$('#newWsBtn').addEventListener('click', () => { $('#modal').classList.remove('hidden'); $('#wsName').value = ''; $('#wsPathInput').value = ''; $('#wsName').focus(); });
-$('#wsCancel').addEventListener('click', () => $('#modal').classList.add('hidden'));
-$('#wsCreate').addEventListener('click', async () => {
-  const name = $('#wsName').value.trim();
-  const p = $('#wsPathInput').value.trim();
-  if (!p) { alert('Informe um caminho.'); return; }
-  const d = await (await fetch('/api/workspaces', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, path: p, model: modelSelect.value }) })).json();
-  if (d.error) { alert(d.error); return; }
-  $('#modal').classList.add('hidden');
-  await refreshWs(); await refreshTree();
-  chatEl.innerHTML = ''; addMsg('info', 'Workspace criado: ' + name);
-});
+$('#treeBtn').addEventListener('click', () => { toolsPanel.classList.toggle('hidden'); if (!toolsPanel.classList.contains('hidden')) refreshTree(); });
+$('#treeClose').addEventListener('click', () => toolsPanel.classList.add('hidden'));
 
 // ---- init ----
-try { if (localStorage.getItem('rc-theme') === 'light') { document.body.classList.add('light'); $('#themeBtn').textContent = '☀️ Tema'; } } catch {}
-fetch('/api/health').then((r) => r.json()).then((d) => { statusEl.textContent = `proxy ${d.api_base} · ${d.model} · ${d.workspaces ? d.workspaces.length : ''} ws`; }).catch(() => (statusEl.textContent = 'proxy: erro'));
-refreshWs().then(refreshTree);
+try { if (localStorage.getItem('rc-theme') === 'light') { document.body.classList.add('light'); $('#themeBtn').textContent = '☀️'; } } catch {}
+loadSessions();

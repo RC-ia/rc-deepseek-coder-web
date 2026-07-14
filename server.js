@@ -1,11 +1,10 @@
 'use strict';
 /*
  * rc-deepseek-coder-web — backend Node (zero deps).
- *  - UI em public/ (chat + tool calls ao vivo + sidebar de workspaces)
- *  - POST /api/chat  -> loop do agente via tool_calls NATIVO (OpenAI) + SSE
- *  - workspaces dinamicos: criar/switch em qualquer caminho (persistido)
+ *  - UI estilo OpenCode: sessions persistentes (arquivos JSON), chat, tool calls ao vivo
+ *  - POST /api/sessions/:id/messages -> roda o agente via tool_calls NATIVO (OpenAI) + SSE
  *
- * Env: DS_API_BASE, DS_API_KEY, DS_MODEL, DS_WORKDIR, PORT
+ * Env: DS_API_BASE, DS_API_KEY, DS_MODEL, PORT
  */
 
 const http = require('http');
@@ -14,7 +13,7 @@ const os = require('os');
 const path = require('path');
 const { URL } = require('url');
 
-// ---- carrega .env (zero-dep) ANTES de ler as configs ----
+// ---- carrega .env (zero-dep) ----
 function loadEnv() {
   const f = path.join(__dirname, '.env');
   if (!fs.existsSync(f)) return;
@@ -32,26 +31,44 @@ const API_BASE = (process.env.DS_API_BASE || 'http://172.22.0.1:9655').replace(/
 const API_KEY = process.env.DS_API_KEY || 'sk-local';
 const PORT = Number(process.env.PORT || 8080);
 const MAX_TURNS = Number(process.env.DS_MAX_TURNS || 40);
-const WS_FILE = path.join(os.homedir(), '.rc-coder-workspaces.json');
+const SESS_DIR = path.join(os.homedir(), '.rc-coder', 'sessions');
+fs.mkdirSync(SESS_DIR, { recursive: true });
 
 const MODELS = ['deepseek-reasoner', 'deepseek-v4-pro', 'deepseek-chat', 'deepseek-v3'];
 
-// ---- workspaces persistentes ----
-let workspaces = [];
-try { workspaces = JSON.parse(fs.readFileSync(WS_FILE, 'utf-8')); } catch {}
-if (!Array.isArray(workspaces) || !workspaces.length) {
-  const def = path.resolve(process.env.DS_WORKDIR || './workspace');
-  workspaces = [{ name: 'default', path: def, model: process.env.DS_MODEL || 'deepseek-reasoner' }];
-  fs.mkdirSync(def, { recursive: true });
-  saveWs();
+// ---------------------------------------------------------------------------
+// Sessoes (persistencia em arquivo)
+// ---------------------------------------------------------------------------
+function listSessions() {
+  let files = [];
+  try { files = fs.readdirSync(SESS_DIR).filter((f) => f.endsWith('.json')); } catch {}
+  return files.map((f) => {
+    try { return JSON.parse(fs.readFileSync(path.join(SESS_DIR, f), 'utf-8')); } catch { return null; }
+  }).filter(Boolean).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
 }
-let activeWs = 0;
-function saveWs() { fs.writeFileSync(WS_FILE, JSON.stringify(workspaces, null, 2)); }
-function ws() { return workspaces[activeWs]; }
-function wsRoot() { const r = path.resolve(ws().path); fs.mkdirSync(r, { recursive: true }); return r; }
+function getSession(id) {
+  const p = path.join(SESS_DIR, id + '.json');
+  if (!fs.existsSync(p)) return null;
+  try { return JSON.parse(fs.readFileSync(p, 'utf-8')); } catch { return null; }
+}
+function saveSession(s) {
+  s.updatedAt = Date.now();
+  fs.writeFileSync(path.join(SESS_DIR, s.id + '.json'), JSON.stringify(s, null, 2));
+}
+function newId() { return 's' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
+function deriveTitle(messages) {
+  const firstUser = messages.find((m) => m.role === 'user');
+  if (!firstUser) return 'Nova conversa';
+  const t = String(firstUser.content || '').trim().split('\n')[0];
+  return (t.length > 42 ? t.slice(0, 42) + '…' : t) || 'Nova conversa';
+}
+function previewOf(s) {
+  const last = [...(s.messages || [])].reverse().find((m) => m.role === 'assistant' && m.content);
+  return last ? (String(last.content).slice(0, 80)) : 'Sem mensagens';
+}
 
 // ---------------------------------------------------------------------------
-// Ferramentas (schema OpenAI + implementacao FS sandbox)
+// Ferramentas (schema OpenAI + FS sandbox por workspace da sessao)
 // ---------------------------------------------------------------------------
 const TOOL_DEFS = [
   { type: 'function', function: { name: 'read', description: 'Read a file or list a directory inside the workspace. Relative path.', parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } } },
@@ -61,18 +78,20 @@ const TOOL_DEFS = [
   { type: 'function', function: { name: 'glob', description: 'Find files matching a glob pattern inside the workspace.', parameters: { type: 'object', properties: { pattern: { type: 'string' } }, required: ['pattern'] } } },
 ];
 
-function resolveRel(rel) {
-  const root = wsRoot();
+function wsRootOf(s) {
+  const root = path.resolve(s.workspace || './workspace');
+  fs.mkdirSync(root, { recursive: true });
+  return root;
+}
+function resolveRel(root, rel) {
   const p = path.resolve(root, rel || '');
   if (p !== root && !p.startsWith(root + path.sep)) throw new Error('path escapes workspace: ' + rel);
   return p;
 }
-
-function runTool(name, args) {
-  const root = wsRoot();
+function runTool(root, name, args) {
   try {
     if (name === 'read') {
-      const p = resolveRel(args.path);
+      const p = resolveRel(root, args.path);
       if (fs.statSync(p).isDirectory()) {
         const items = fs.readdirSync(p).sort();
         return 'DIR ' + path.relative(root, p) + ':\n' + items.map((i) => {
@@ -83,13 +102,13 @@ function runTool(name, args) {
       return fs.readFileSync(p, 'utf-8');
     }
     if (name === 'write') {
-      const p = resolveRel(args.path);
+      const p = resolveRel(root, args.path);
       fs.mkdirSync(path.dirname(p), { recursive: true });
       fs.writeFileSync(p, args.content || '', 'utf-8');
       return `wrote ${path.relative(root, p)} (${String(args.content || '').length} chars)`;
     }
     if (name === 'edit') {
-      const p = resolveRel(args.path);
+      const p = resolveRel(root, args.path);
       let text = fs.readFileSync(p, 'utf-8');
       if (!text.includes(args.old_string)) return 'ERROR: old_string not found (exact match required).';
       text = text.replace(args.old_string, args.new_string || '', 1);
@@ -97,11 +116,9 @@ function runTool(name, args) {
       return `edited ${path.relative(root, p)}`;
     }
     if (name === 'list') {
-      const base = resolveRel(args.path || '');
+      const base = resolveRel(root, args.path || '');
       const out = [];
-      for (const e of fs.readdirSync(base, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
-        out.push((e.isDirectory() ? '[d] ' : '[f] ') + e.name);
-      }
+      for (const e of fs.readdirSync(base, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) out.push((e.isDirectory() ? '[d] ' : '[f] ') + e.name);
       return out.join('\n') || '(empty)';
     }
     if (name === 'glob') {
@@ -109,20 +126,14 @@ function runTool(name, args) {
       return hits.map((h) => path.relative(root, h)).join('\n') || '(no matches)';
     }
     return 'ERROR: unknown tool ' + name;
-  } catch (e) {
-    return `ERROR: ${e.message}`;
-  }
+  } catch (e) { return `ERROR: ${e.message}`; }
 }
-
 function globSync(root, pattern) {
   const results = [];
   const walk = (dir) => {
     let entries;
     try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
-    for (const e of entries) {
-      const full = path.join(dir, e.name);
-      if (e.isDirectory()) walk(full); else results.push(full);
-    }
+    for (const e of entries) { const full = path.join(dir, e.name); if (e.isDirectory()) walk(full); else results.push(full); }
   };
   walk(root);
   const re = patternToRegExp(pattern);
@@ -130,15 +141,9 @@ function globSync(root, pattern) {
 }
 function patternToRegExp(pat) {
   let rx = '^';
-  for (const c of pat.split('')) {
-    if (c === '*') rx += '[^/]*';
-    else if (c === '?') rx += '[^/]';
-    else rx += c.replace(/[.+^${}()|[\]\\]/g, '\\$&');
-  }
+  for (const c of pat.split('')) { if (c === '*') rx += '[^/]*'; else if (c === '?') rx += '[^/]'; else rx += c.replace(/[.+^${}()|[\]\\]/g, '\\$&'); }
   return new RegExp(rx + '$');
 }
-
-// arvore de arquivos (para a UI)
 function buildTree(dir, base, depth) {
   if (depth > 4) return [];
   let entries;
@@ -148,11 +153,8 @@ function buildTree(dir, base, depth) {
     if (e.name.startsWith('.') && e.name !== '.git') continue;
     const full = path.join(dir, e.name);
     const rel = path.relative(base, full);
-    if (e.isDirectory()) {
-      out.push({ name: e.name, path: rel, type: 'dir', children: buildTree(full, base, depth + 1) });
-    } else {
-      out.push({ name: e.name, path: rel, type: 'file' });
-    }
+    if (e.isDirectory()) out.push({ name: e.name, path: rel, type: 'dir', children: buildTree(full, base, depth + 1) });
+    else out.push({ name: e.name, path: rel, type: 'file' });
   }
   return out;
 }
@@ -164,19 +166,12 @@ function chatCompletions(messages, model) {
   const body = JSON.stringify({ model, messages, tools: TOOL_DEFS, tool_choice: 'auto', stream: false });
   const attempt = () => new Promise((resolve, reject) => {
     const u = new URL(API_BASE + '/v1/chat/completions');
-    const req = http.request(u, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + API_KEY, 'Content-Length': Buffer.byteLength(body) },
-      timeout: 180000,
-    }, (res) => {
+    const req = http.request(u, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + API_KEY, 'Content-Length': Buffer.byteLength(body) }, timeout: 180000 }, (res) => {
       let data = '';
       res.on('data', (c) => (data += c));
       res.on('end', () => {
-        try {
-          const json = JSON.parse(data);
-          if (json.error) return reject(Object.assign(new Error(json.error.message), { status: res.statusCode }));
-          resolve(json);
-        } catch (e) { reject(new Error('resposta invalida do proxy: ' + data.slice(0, 200))); }
+        try { const json = JSON.parse(data); if (json.error) return reject(Object.assign(new Error(json.error.message), { status: res.statusCode })); resolve(json); }
+        catch (e) { reject(new Error('resposta invalida do proxy: ' + data.slice(0, 200))); }
       });
     });
     req.on('error', reject);
@@ -187,14 +182,14 @@ function chatCompletions(messages, model) {
 }
 
 // ---------------------------------------------------------------------------
-// Loop do agente (SSE)
+// Loop do agente (SSE) — roda dentro de uma sessao
 // ---------------------------------------------------------------------------
-function runAgent(userMsg, model, send) {
-  const root = wsRoot();
-  const messages = [
-    { role: 'system', content: `You are a coding agent inside the workspace: ${root}\nUse the tools (read/write/edit/list/glob) to accomplish the request. Use RELATIVE paths. When done, reply with a short final summary (no tool calls).` },
-    { role: 'user', content: userMsg },
-  ];
+function runAgent(session, userMsg, model, send) {
+  const root = wsRootOf(session);
+  const messages = session.messages.map((m) => ({ role: m.role, content: m.content, tool_calls: m.tool_calls }));
+  messages.push({ role: 'user', content: userMsg });
+  session.messages.push({ role: 'user', content: userMsg, ts: Date.now() });
+
   let turns = 0;
   const step = async () => {
     if (turns >= MAX_TURNS) { send({ type: 'error', text: 'Limite de turnos atingido.' }); send({ type: 'done' }); return; }
@@ -208,28 +203,33 @@ function runAgent(userMsg, model, send) {
     const choice = resp.choices[0];
     const msg = choice.message;
     messages.push(msg);
+    const stored = { role: 'assistant', content: msg.content || '', tool_calls: (msg.tool_calls || []).map((t) => ({ id: t.id, name: t.function.name, arguments: t.function.arguments })), ts: Date.now() };
+    session.messages.push(stored);
     if (choice.finish_reason === 'tool_calls' || (msg.tool_calls && msg.tool_calls.length)) {
-      // texto que o modelo enviou JUNTO com a tool call (ex.: raciocinio/comentario)
       if (msg.content && msg.content.trim()) send({ type: 'assistant', text: msg.content });
       for (const tc of msg.tool_calls) {
         let args = {};
         try { args = JSON.parse(tc.function.arguments || '{}'); } catch {}
         send({ type: 'tool', name: tc.function.name, args });
-        const result = runTool(tc.function.name, args);
+        const result = runTool(root, tc.function.name, args);
         send({ type: 'tool_result', name: tc.function.name, result });
+        stored.tools = stored.tools || [];
+        stored.tools.push({ name: tc.function.name, args, result });
         messages.push({ role: 'tool', tool_call_id: tc.id, content: result });
       }
-      if (turns % 2 === 0) send({ type: 'tree', tree: buildTree(root, root, 0) }); // atualiza arvore
+      if (turns % 2 === 0) send({ type: 'tree', tree: buildTree(root, root, 0) });
       return step();
     } else {
       send({ type: 'assistant', text: msg.content || '' });
       send({ type: 'tree', tree: buildTree(root, root, 0) });
+      session.title = deriveTitle(session.messages);
+      saveSession(session);
+      send({ type: 'session', session: publicSession(session) });
       send({ type: 'done' });
     }
   };
   step();
 }
-
 function compressHistory(messages) {
   const kept = [messages[0]];
   for (const m of messages.slice(1)) {
@@ -238,52 +238,47 @@ function compressHistory(messages) {
   }
   return kept;
 }
+function publicSession(s) {
+  return { id: s.id, title: s.title, workspace: s.workspace, model: s.model, preview: previewOf(s), updatedAt: s.updatedAt, createdAt: s.createdAt, messageCount: (s.messages || []).length };
+}
 
 // ---------------------------------------------------------------------------
 // Servidor HTTP
 // ---------------------------------------------------------------------------
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json' };
-
-function sendJson(res, obj, code) {
-  res.writeHead(code || 200, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify(obj));
-}
-
+function sendJson(res, obj, code) { res.writeHead(code || 200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); }
 const server = http.createServer((req, res) => {
   const u = new URL(req.url, 'http://localhost');
-
   const readBody = (cb) => { let r = ''; req.on('data', (c) => (r += c)); req.on('end', () => { let j = {}; try { j = JSON.parse(r); } catch {} cb(j); }); };
 
-  // ---- API ----
-  if (u.pathname === '/api/chat' && req.method === 'POST') {
+  // ---- sessions ----
+  if (u.pathname === '/api/sessions' && req.method === 'GET') {
+    return sendJson(res, { sessions: listSessions().map(publicSession), models: MODELS, api_base: API_BASE });
+  }
+  if (u.pathname === '/api/sessions' && req.method === 'POST') {
     return readBody((j) => {
-      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
-      const send = (o) => { res.write(`data: ${JSON.stringify(o)}\n\n`); if (o.type === 'done') res.end(); };
-      send({ type: 'start' });
-      runAgent(j.message || '', ws().model, send);
+      const s = { id: newId(), title: j.title || 'Nova conversa', workspace: j.workspace || './workspace', model: j.model || process.env.DS_MODEL || 'deepseek-reasoner', messages: [], createdAt: Date.now(), updatedAt: Date.now() };
+      saveSession(s);
+      return sendJson(res, { session: publicSession(s) });
     });
   }
-  if (u.pathname === '/api/health') return sendJson(res, { ok: true, workdir: ws().path, model: ws().model, api_base: API_BASE, workspaces });
-  if (u.pathname === '/api/workspaces' && req.method === 'GET') return sendJson(res, { workspaces, active: activeWs });
-  if (u.pathname === '/api/workspaces' && req.method === 'POST') {
-    return readBody((j) => {
-      const p = path.resolve(j.path || '');
-      if (!fs.existsSync(p)) { try { fs.mkdirSync(p, { recursive: true }); } catch (e) { return sendJson(res, { error: e.message }, 400); } }
-      if (j.switchTo !== undefined) { activeWs = Math.max(0, Math.min(workspaces.length - 1, Number(j.switchTo))); return sendJson(res, { workspaces, active: activeWs }); }
-      const name = j.name || path.basename(p);
-      if (workspaces.some((w) => w.path === p)) return sendJson(res, { error: 'workspace ja existe' }, 400);
-      workspaces.push({ name, path: p, model: j.model || 'deepseek-reasoner' });
-      activeWs = workspaces.length - 1; saveWs();
-      return sendJson(res, { workspaces, active: activeWs });
-    });
+  const m = u.pathname.match(/^\/api\/sessions\/([\w-]+)(\/messages)?$/);
+  if (m) {
+    const id = m[1];
+    const s = getSession(id);
+    if (!s) { res.writeHead(404); res.end('session not found'); return; }
+    if (req.method === 'GET') return sendJson(res, { session: s, tree: buildTree(wsRootOf(s), wsRootOf(s), 0) });
+    if (req.method === 'DELETE') { fs.unlinkSync(path.join(SESS_DIR, id + '.json')); return sendJson(res, { ok: true }); }
+    if (req.method === 'POST' && m[2] === '/messages') {
+      return readBody((j) => {
+        res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+        const send = (o) => { res.write(`data: ${JSON.stringify(o)}\n\n`); if (o.type === 'done') res.end(); };
+        send({ type: 'start' });
+        runAgent(s, j.message || '', j.model || s.model, send);
+      });
+    }
   }
-  if (u.pathname === '/api/model' && req.method === 'POST') {
-    return readBody((j) => { if (MODELS.includes(j.model)) { ws().model = j.model; saveWs(); } sendJson(res, { model: ws().model }); });
-  }
-  if (u.pathname === '/api/tree' && req.method === 'GET') {
-    const root = wsRoot();
-    return sendJson(res, { tree: buildTree(root, root, 0) });
-  }
+  if (u.pathname === '/api/health') return sendJson(res, { ok: true, api_base: API_BASE });
 
   // ---- estaticos ----
   let filePath = path.join(__dirname, 'public', u.pathname === '/' ? 'index.html' : u.pathname);
@@ -298,5 +293,5 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, () => {
   console.log(`[rc-deepseek-coder-web] http://localhost:${PORT}`);
-  console.log(`  proxy=${API_BASE}  workspaces=${workspaces.length}  ativo=${ws().name} (${ws().path})  model=${ws().model}`);
+  console.log(`  proxy=${API_BASE}  sessions=${listSessions().length}  dir=${SESS_DIR}`);
 });
