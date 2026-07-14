@@ -197,18 +197,20 @@ function runAgent(userMsg, model, send) {
   ];
   let turns = 0;
   const step = async () => {
-    if (turns >= MAX_TURNS) { send({ type: 'error', text: 'Limite de turnos atingido.' }); return; }
+    if (turns >= MAX_TURNS) { send({ type: 'error', text: 'Limite de turnos atingido.' }); send({ type: 'done' }); return; }
     turns++;
     let resp;
     try { resp = await chatCompletions(messages, model); }
     catch (e) {
       if (e.status === 413) { send({ type: 'info', text: '413 contexto cheio — comprimindo historico...' }); messages = compressHistory(messages); return step(); }
-      send({ type: 'error', text: `Erro ${e.status || ''}: ${e.message}` }); return;
+      send({ type: 'error', text: `Erro ${e.status || ''}: ${e.message}` }); send({ type: 'done' }); return;
     }
     const choice = resp.choices[0];
     const msg = choice.message;
     messages.push(msg);
     if (choice.finish_reason === 'tool_calls' || (msg.tool_calls && msg.tool_calls.length)) {
+      // texto que o modelo enviou JUNTO com a tool call (ex.: raciocinio/comentario)
+      if (msg.content && msg.content.trim()) send({ type: 'assistant', text: msg.content });
       for (const tc of msg.tool_calls) {
         let args = {};
         try { args = JSON.parse(tc.function.arguments || '{}'); } catch {}
@@ -222,6 +224,7 @@ function runAgent(userMsg, model, send) {
     } else {
       send({ type: 'assistant', text: msg.content || '' });
       send({ type: 'tree', tree: buildTree(root, root, 0) });
+      send({ type: 'done' });
     }
   };
   step();
@@ -255,7 +258,7 @@ const server = http.createServer((req, res) => {
   if (u.pathname === '/api/chat' && req.method === 'POST') {
     return readBody((j) => {
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
-      const send = (o) => res.write(`data: ${JSON.stringify(o)}\n\n`);
+      const send = (o) => { res.write(`data: ${JSON.stringify(o)}\n\n`); if (o.type === 'done') res.end(); };
       send({ type: 'start' });
       runAgent(j.message || '', ws().model, send);
     });

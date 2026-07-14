@@ -127,6 +127,7 @@ function handleEvent(ev) {
     case 'info': addMsg('info', ev.text); break;
     case 'error': addMsg('error', ev.text); break;
     case 'tree': renderTree(ev.tree); break;
+    case 'done': sendBtn.disabled = false; refreshTree(); break;
   }
 }
 
