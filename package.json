@@ -1,0 +1,14 @@
+{
+  "name": "rc-deepseek-coder-web",
+  "version": "1.0.0",
+  "description": "Web UI coding agent (npm + HTML) that generates code via the DeepSeek Web proxy using native OpenAI tool-calling.",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "author": "RC-ia"
+}

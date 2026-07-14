@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RC DeepSeek Coder</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header>
+    <h1>RC DeepSeek Coder</h1>
+    <span id="status" class="status">proxy: …</span>
+  </header>
+
+  <main>
+    <section id="chat" class="chat"></section>
+
+    <section id="tools" class="tools">
+      <h2>Tool calls ao vivo</h2>
+      <div id="toollog" class="toollog"></div>
+    </section>
+  </main>
+
+  <footer>
+    <textarea id="input" placeholder="Descreva o que quer codar… (Enter envia, Shift+Enter quebra linha)"></textarea>
+    <button id="send">Enviar</button>
+  </footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>
