@@ -26,15 +26,19 @@ O backend Node envia as ferramentas no formato `tools` da OpenAI e o proxy devol
 - O proxy DeepSeek Web rodando e acessível
 - Quem roda o app (WSL/Linux) deve alcançar o proxy
 
-## Configuração (env)
+## Configuração (env / .env)
+
+As configs podem vir de variáveis de ambiente **ou** de um arquivo **`.env`** na raiz do projeto (carregado automaticamente, sem dependências). Copie `.env.example` para `.env` e ajuste.
 
 | Var | Default | Descrição |
 |---|---|---|
-| `DS_API_BASE` | `http://172.22.0.1:9655` | Base URL do proxy |
+| `DS_API_BASE` | `http://172.22.0.1:9655` | Base URL do proxy (**obrigatória**) |
 | `DS_API_KEY` | `sk-local` | Proxy não valida |
 | `DS_MODEL` | `deepseek-reasoner` | Modelo padrão (cria workspace "default") |
 | `DS_WORKDIR` | `./workspace` | Pasta do workspace "default" |
 | `PORT` | `8080` | Porta do servidor web |
+
+> A URL carregada aparece no canto inferior da sidebar (`proxy <url>`).
 
 ## Uso
 

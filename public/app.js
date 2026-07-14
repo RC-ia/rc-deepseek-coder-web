@@ -165,5 +165,5 @@ $('#wsCreate').addEventListener('click', async () => {
 
 // ---- init ----
 try { if (localStorage.getItem('rc-theme') === 'light') { document.body.classList.add('light'); $('#themeBtn').textContent = '☀️ Tema'; } } catch {}
-fetch('/api/health').then((r) => r.json()).then((d) => { statusEl.textContent = `proxy OK · ${d.model} · ${d.workspaces ? d.workspaces.length : ''} ws`; }).catch(() => (statusEl.textContent = 'proxy: erro'));
+fetch('/api/health').then((r) => r.json()).then((d) => { statusEl.textContent = `proxy ${d.api_base} · ${d.model} · ${d.workspaces ? d.workspaces.length : ''} ws`; }).catch(() => (statusEl.textContent = 'proxy: erro'));
 refreshWs().then(refreshTree);

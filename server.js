@@ -14,6 +14,20 @@ const os = require('os');
 const path = require('path');
 const { URL } = require('url');
 
+// ---- carrega .env (zero-dep) ANTES de ler as configs ----
+function loadEnv() {
+  const f = path.join(__dirname, '.env');
+  if (!fs.existsSync(f)) return;
+  for (const line of fs.readFileSync(f, 'utf-8').split('\n')) {
+    const m = line.match(/^\s*([\w.]+)\s*=\s*(.*)\s*$/);
+    if (!m || line.trim().startsWith('#')) continue;
+    let val = m[2];
+    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) val = val.slice(1, -1);
+    if (process.env[m[1]] === undefined) process.env[m[1]] = val;
+  }
+}
+loadEnv();
+
 const API_BASE = (process.env.DS_API_BASE || 'http://172.22.0.1:9655').replace(/\/$/, '');
 const API_KEY = process.env.DS_API_KEY || 'sk-local';
 const PORT = Number(process.env.PORT || 8080);
@@ -246,7 +260,7 @@ const server = http.createServer((req, res) => {
       runAgent(j.message || '', ws().model, send);
     });
   }
-  if (u.pathname === '/api/health') return sendJson(res, { ok: true, workdir: ws().path, model: ws().model, workspaces });
+  if (u.pathname === '/api/health') return sendJson(res, { ok: true, workdir: ws().path, model: ws().model, api_base: API_BASE, workspaces });
   if (u.pathname === '/api/workspaces' && req.method === 'GET') return sendJson(res, { workspaces, active: activeWs });
   if (u.pathname === '/api/workspaces' && req.method === 'POST') {
     return readBody((j) => {
