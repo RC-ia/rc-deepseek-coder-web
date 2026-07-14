@@ -41,6 +41,7 @@ Sessions ficam em `~/.rc-coder/sessions/`.
 ## Uso
 
 ```bash
+git clone https://github.com/RC-ia/rc-deepseek-coder-web.git
 cd rc-deepseek-coder-web
 npm start          # node server.js
 # abra http://localhost:8080
